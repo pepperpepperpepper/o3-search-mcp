@@ -23,6 +23,7 @@ const config = {
     | "low"
     | "medium"
     | "high",
+  processTimeout: parseInt(process.env.PROCESS_TIMEOUT || "300000"), // 5 minutes default
 };
 
 // Initialize OpenAI client with retry and timeout configuration
@@ -85,6 +86,53 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.log("MCP Server running on stdio");
+
+  // Set process timeout to prevent hanging
+  const timeoutHandle = setTimeout(() => {
+    console.log(`Process timeout after ${config.processTimeout}ms, shutting down...`);
+    shutdown("timeout");
+  }, config.processTimeout);
+
+  // Handle graceful shutdown
+  const shutdown = async (signal: string) => {
+    console.log(`Received ${signal}, shutting down gracefully...`);
+    clearTimeout(timeoutHandle);
+    try {
+      await transport.close();
+      process.exit(0);
+    } catch (error) {
+      console.error("Error during shutdown:", error);
+      process.exit(1);
+    }
+  };
+
+  // Handle process termination signals
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  
+  // Handle stdin closure (when client disconnects)
+  process.stdin.on("end", () => {
+    console.log("Client disconnected, shutting down...");
+    shutdown("stdin end");
+  });
+
+  // Handle stdin error
+  process.stdin.on("error", (error) => {
+    console.error("Stdin error:", error);
+    shutdown("stdin error");
+  });
+
+  // Handle uncaught exceptions
+  process.on("uncaughtException", (error) => {
+    console.error("Uncaught exception:", error);
+    shutdown("uncaught exception");
+  });
+
+  // Handle unhandled promise rejections
+  process.on("unhandledRejection", (reason, promise) => {
+    console.error("Unhandled rejection at:", promise, "reason:", reason);
+    shutdown("unhandled rejection");
+  });
 }
 
 main().catch((error) => {
